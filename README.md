@@ -14,6 +14,11 @@ Features:
 
 No pod exec feature (safe).
 
-## Build
-```bash
-docker build -t webk8s:0.1.0 .
+#Using helm we can deploy
+
+helm upgrade webk8s . -n kube-system -f values.yaml
+kubectl -n kube-system rollout restart deployment webk8s
+
+kubectl -n kube-system port-forward svc/webk8s 8080:80
+
+
