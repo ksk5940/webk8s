@@ -14,13 +14,15 @@ function statusBadgePod(st) {
   const phase = st?.phase || "Unknown";
   if (phase === "Running") return `<span class="badge-run">Running</span>`;
   if (phase === "Pending") return `<span class="badge-warn">Pending</span>`;
+  if (phase === "Completed") return `<span class="badge-run">Completed</span>`;
   return `<span class="badge-bad">${escapeHtml(phase)}</span>`;
 }
 
 function statusBadgeWorkload(st) {
   const ready = st?.readyReplicas ?? 0;
   const rep = st?.replicas ?? 0;
-  return `<span class="badge-soft">${ready}/${rep} ready</span>`;
+  const color = ready === rep ? "badge-run" : "badge-warn";
+  return `<span class="${color}">${ready}/${rep}</span>`;
 }
 
 async function init() {
@@ -38,7 +40,7 @@ async function init() {
       e.preventDefault();
       const tab = a.getAttribute("data-tab");
 
-      // ✅ Logs in NEW TAB
+      // Logs in NEW TAB
       if (tab === "logs") {
         if (!state.selectedPod) return;
         const url = `/logs.html?namespace=${encodeURIComponent(state.namespace)}&pod=${encodeURIComponent(state.selectedPod)}`;
@@ -117,19 +119,19 @@ function renderTable() {
 
   const isPod = state.resource === "pods";
 
-  UI.head().innerHTML = `
-    <tr>
-      <th style="width:42%">Name</th>
-      <th>${isPod ? "Ready" : "Status"}</th>
-      <th>${isPod ? "Status" : "Age"}</th>
-      <th>${isPod ? "Restarts" : "Age"}</th>
-      <th>Node</th>
-      <th>Age</th>
-    </tr>
-  `;
+  if (isPod) {
+    UI.head().innerHTML = `
+      <tr>
+        <th>Name</th>
+        <th>Ready</th>
+        <th>Status</th>
+        <th>Restarts</th>
+        <th>Node</th>
+        <th>Age</th>
+      </tr>
+    `;
 
-  UI.body().innerHTML = items.map(x => {
-    if (isPod) {
+    UI.body().innerHTML = items.map(x => {
       const ready = x.status?.ready || "-";
       const st = statusBadgePod(x.status);
       const restarts = x.status?.restarts ?? 0;
@@ -137,32 +139,37 @@ function renderTable() {
       return `
         <tr class="pod-row" data-name="${escapeHtml(x.name)}">
           <td class="fw-bold">${escapeHtml(x.name)}</td>
-          <td><span class="badge-soft">${escapeHtml(ready)}</span></td>
+          <td>${escapeHtml(ready)}</td>
           <td>${st}</td>
           <td>${escapeHtml(restarts)}</td>
-          <td class="fw-semibold">${escapeHtml(node)}</td>
+          <td class="small-muted">${escapeHtml(node)}</td>
           <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
         </tr>
       `;
-    } else {
+    }).join("");
+
+    document.querySelectorAll(".pod-row").forEach(tr => {
+      tr.onclick = () => openPod(tr.getAttribute("data-name"));
+    });
+  } else {
+    UI.head().innerHTML = `
+      <tr>
+        <th>Name</th>
+        <th>Ready</th>
+        <th>Age</th>
+      </tr>
+    `;
+
+    UI.body().innerHTML = items.map(x => {
       const status = statusBadgeWorkload(x.status);
       return `
         <tr>
           <td class="fw-bold">${escapeHtml(x.name)}</td>
           <td>${status}</td>
           <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
-          <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
-          <td class="small-muted">-</td>
-          <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
         </tr>
       `;
-    }
-  }).join("");
-
-  if (isPod) {
-    document.querySelectorAll(".pod-row").forEach(tr => {
-      tr.onclick = () => openPod(tr.getAttribute("data-name"));
-    });
+    }).join("");
   }
 }
 
@@ -174,7 +181,7 @@ async function openPod(pod) {
   document.querySelector(`.drawer-tab[data-tab="overview"]`).classList.add("active");
 
   UI.drawerTitle().textContent = `Pod Details: ${pod}`;
-  UI.drawerSubtitle().textContent = `${state.namespace}`;
+  UI.drawerSubtitle().textContent = `Namespace: ${state.namespace}`;
   openDrawer();
 
   await renderDrawer();
@@ -199,23 +206,28 @@ async function renderDrawer() {
         <div class="kv-key">Started</div><div class="kv-val">${escapeHtml(d.startTime || "-")}</div>
       </div>
       <hr/>
-      <div class="fw-bold mb-2">Containers</div>
-      <ul class="mb-0">
-        ${(d.containers||[]).map(c => `<li><b>${escapeHtml(c.name)}</b> <span class="small-muted">(Image: ${escapeHtml(c.image)})</span></li>`).join("")}
+      <div style="font-weight: 700; margin-bottom: 16px;">Containers</div>
+      <ul style="list-style: none; padding: 0; margin: 0;">
+        ${(d.containers||[]).map(c => `
+          <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+            <div style="font-weight: 600;">${escapeHtml(c.name)}</div>
+            <div class="small-muted">${escapeHtml(c.image)}</div>
+          </li>
+        `).join("")}
       </ul>
     `;
 
   } else if (state.activeTab === "events") {
-    const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+    const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encapeURIComponent(pod)}`);
     if (!events || events.length === 0) {
       UI.tabContent().innerHTML = `<div class="small-muted">No events found.</div>`;
       return;
     }
 
     UI.tabContent().innerHTML = `
-      <div class="fw-bold mb-2">Events</div>
-      <div class="table-responsive">
-        <table class="table table-sm align-middle">
+      <div style="font-weight: 700; margin-bottom: 16px;">Events</div>
+      <div style="overflow-x: auto;">
+        <table class="table">
           <thead class="table-head">
             <tr><th>Type</th><th>Reason</th><th>Message</th><th>Time</th></tr>
           </thead>
@@ -238,8 +250,8 @@ async function renderDrawer() {
 
     if (m.available === false) {
       UI.tabContent().innerHTML = `
-        <div class="alert alert-warning">
-          <b>Metrics not available</b><br/>
+        <div style="padding: 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;">
+          <strong>Metrics not available</strong><br/>
           ${escapeHtml(m.message || "")}
         </div>
       `;
@@ -248,22 +260,17 @@ async function renderDrawer() {
 
     const totals = calcMetricsTotals(m);
     UI.tabContent().innerHTML = `
-      <div class="row g-3">
-        <div class="col-6">
-          <div class="p-3 border rounded-4 shadow-sm">
-            <div class="small-muted">CPU</div>
-            <div class="fs-3 fw-bold">${totals.cpu}</div>
-          </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+        <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+          <div class="small-muted" style="margin-bottom: 8px;">CPU Usage</div>
+          <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.cpu}</div>
         </div>
-        <div class="col-6">
-          <div class="p-3 border rounded-4 shadow-sm">
-            <div class="small-muted">Memory</div>
-            <div class="fs-3 fw-bold">${totals.mem}</div>
-          </div>
+        <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+          <div class="small-muted" style="margin-bottom: 8px;">Memory Usage</div>
+          <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.mem}</div>
         </div>
       </div>
-      <hr/>
-      <div class="small-muted">Source: metrics.k8s.io</div>
+      <div class="small-muted">Source: metrics.k8s.io/v1beta1</div>
     `;
   }
 }
@@ -276,6 +283,7 @@ function calcMetricsTotals(metricsObj) {
   });
   return { cpu: formatCPU(cpuNano), mem: formatMem(memBytes) };
 }
+
 function parseCPUToNano(s) {
   if (!s) return 0;
   if (s.endsWith("n")) return Number(s.slice(0, -1));
@@ -283,6 +291,7 @@ function parseCPUToNano(s) {
   if (s.endsWith("m")) return Number(s.slice(0, -1)) * 1000000;
   return Number(s) * 1000000000;
 }
+
 function parseMemToBytes(s) {
   if (!s) return 0;
   const num = Number(s.replace(/[a-zA-Z]/g, ""));
@@ -291,14 +300,17 @@ function parseMemToBytes(s) {
   if (s.endsWith("Gi")) return num * 1024 * 1024 * 1024;
   return num;
 }
+
 function formatCPU(nano) {
   const millicores = nano / 1000000;
   return `${millicores.toFixed(0)}m`;
 }
+
 function formatMem(bytes) {
   const mib = bytes / (1024 * 1024);
   return `${mib.toFixed(0)}Mi`;
 }
+
 function capitalize(s) {
   if (!s) return s;
   return s.charAt(0).toUpperCase() + s.slice(1);

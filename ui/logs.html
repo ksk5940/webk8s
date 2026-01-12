@@ -3,29 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>webk8s logs</title>
-
-  <!-- Bootstrap -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- FontAwesome -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-
-  <!-- Main CSS (same theme) -->
+  <title>WebK8s - Pod Logs</title>
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 
 <body class="logs-page">
   <div class="logs-topbar">
     <div class="logs-tag">
-      <i class="fa-solid fa-layer-group"></i>
+      <span>📦</span>
       <span id="nsText">namespace: -</span>
     </div>
 
-    <!-- container dropdown (only shown when needed) -->
     <select id="containerSelect" class="logs-container-select" style="display:none;"></select>
 
     <div class="logs-tag">
-      <i class="fa-solid fa-box"></i>
+      <span>🔲</span>
       <span id="podText">pod: -</span>
     </div>
   </div>
@@ -62,9 +54,9 @@
 
   function startStream(){
     stopStream();
-    box.textContent = ""; // clear logs on container switch
+    box.textContent = "";
 
-    let url = `/api/logs/stream?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}&tailLines=200`;
+    let url = `/api/logs/stream?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`;
     if (selectedContainer) {
       url += `&container=${encodeURIComponent(selectedContainer)}`;
     }
@@ -94,12 +86,12 @@
     let html = `<option value="">(default container)</option>`;
 
     if (containers && containers.length > 0) {
-      html += `<option value="" disabled>──────── Containers ────────</option>`;
+      html += `<option value="" disabled>─── Containers ───</option>`;
       html += containers.map(c => `<option value="${c}">${c}</option>`).join("");
     }
 
     if (initContainers && initContainers.length > 0) {
-      html += `<option value="" disabled>────── Init Containers ─────</option>`;
+      html += `<option value="" disabled>─── Init Containers ───</option>`;
       html += initContainers.map(c => `<option value="${c}">init: ${c}</option>`).join("");
     }
 
