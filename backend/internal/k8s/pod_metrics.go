@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/rest"
 )
 
@@ -12,13 +14,17 @@ import (
 func GetPodMetrics(ns, pod string) ([]byte, error) {
 	cfg := RestConfig()
 
-	// Create a copy of the config with metrics.k8s.io settings
-	metricsCfg := *cfg
-	metricsCfg.APIPath = "/apis"
-	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
-	metricsCfg.NegotiatedSerializer = cfg.NegotiatedSerializer
+	// Create scheme and serializer for metrics API
+	scheme := runtime.NewScheme()
+	codecs := serializer.NewCodecFactory(scheme)
 
-	rc, err := rest.RESTClientFor(&metricsCfg)
+	// Create a new config for metrics API
+	metricsCfg := rest.CopyConfig(cfg)
+	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	metricsCfg.APIPath = "/apis"
+	metricsCfg.NegotiatedSerializer = codecs.WithoutConversion()
+
+	rc, err := rest.RESTClientFor(metricsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create REST client: %v", err)
 	}
@@ -36,13 +42,17 @@ func GetPodMetrics(ns, pod string) ([]byte, error) {
 func GetNodeMetrics(nodeName string) ([]byte, error) {
 	cfg := RestConfig()
 
-	// Create a copy of the config with metrics.k8s.io settings
-	metricsCfg := *cfg
-	metricsCfg.APIPath = "/apis"
-	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
-	metricsCfg.NegotiatedSerializer = cfg.NegotiatedSerializer
+	// Create scheme and serializer for metrics API
+	scheme := runtime.NewScheme()
+	codecs := serializer.NewCodecFactory(scheme)
 
-	rc, err := rest.RESTClientFor(&metricsCfg)
+	// Create a new config for metrics API
+	metricsCfg := rest.CopyConfig(cfg)
+	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	metricsCfg.APIPath = "/apis"
+	metricsCfg.NegotiatedSerializer = codecs.WithoutConversion()
+
+	rc, err := rest.RESTClientFor(metricsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create REST client: %v", err)
 	}

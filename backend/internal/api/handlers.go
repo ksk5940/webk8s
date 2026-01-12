@@ -225,42 +225,53 @@ func GetServiceDetails(c *gin.Context) {
 		return
 	}
 
+	log.Printf("Service %s found in namespace %s, type: %s", svcName, ns, svc.Spec.Type)
+
 	// Get endpoints
 	endpoints, err := client.CoreV1().Endpoints(ns).Get(context.TODO(), svcName, metav1.GetOptions{})
 	endpointsList := []string{}
-	if err == nil && endpoints != nil {
-		for _, subset := range endpoints.Subsets {
-			// Get all addresses (ready endpoints)
+
+	if err != nil {
+		log.Printf("Error getting endpoints for service %s: %v", svcName, err)
+	} else if endpoints != nil {
+		log.Printf("Found endpoints object for service %s with %d subsets", svcName, len(endpoints.Subsets))
+
+		for i, subset := range endpoints.Subsets {
+			log.Printf("Subset %d: %d addresses, %d notReadyAddresses, %d ports",
+				i, len(subset.Addresses), len(subset.NotReadyAddresses), len(subset.Ports))
+
+			// Process ready addresses
 			for _, addr := range subset.Addresses {
-				// Add each port combination
 				if len(subset.Ports) > 0 {
 					for _, port := range subset.Ports {
-						endpointsList = append(endpointsList, fmt.Sprintf("%s:%d", addr.IP, port.Port))
+						endpoint := fmt.Sprintf("%s:%d", addr.IP, port.Port)
+						endpointsList = append(endpointsList, endpoint)
+						log.Printf("  Added endpoint: %s", endpoint)
 					}
 				} else {
-					// No ports specified, just add IP
 					endpointsList = append(endpointsList, addr.IP)
+					log.Printf("  Added endpoint: %s (no port)", addr.IP)
 				}
 			}
-			// Also check NotReadyAddresses
+
+			// Process not-ready addresses
 			for _, addr := range subset.NotReadyAddresses {
 				if len(subset.Ports) > 0 {
 					for _, port := range subset.Ports {
-						endpointsList = append(endpointsList, fmt.Sprintf("%s:%d (not ready)", addr.IP, port.Port))
+						endpoint := fmt.Sprintf("%s:%d (not ready)", addr.IP, port.Port)
+						endpointsList = append(endpointsList, endpoint)
+						log.Printf("  Added not-ready endpoint: %s", endpoint)
 					}
 				} else {
-					endpointsList = append(endpointsList, fmt.Sprintf("%s (not ready)", addr.IP))
+					endpoint := fmt.Sprintf("%s (not ready)", addr.IP)
+					endpointsList = append(endpointsList, endpoint)
+					log.Printf("  Added not-ready endpoint: %s", endpoint)
 				}
 			}
 		}
-	} else if err != nil {
-		log.Printf("Error getting endpoints for service %s: %v", svcName, err)
 	}
 
-	// If no endpoints found, add a note
-	if len(endpointsList) == 0 {
-		log.Printf("No endpoints found for service %s in namespace %s", svcName, ns)
-	}
+	log.Printf("Total endpoints found: %d", len(endpointsList))
 
 	c.JSON(200, gin.H{
 		"name":      svc.Name,
