@@ -70,14 +70,12 @@ pipeline {
             sh """
               docker build ^
                 -t ${DOCKER_REPO}:${IMAGE_TAG} ^
-                -t ${DOCKER_REPO}:${COMMIT_TAG} ^
                 -t ${DOCKER_REPO}:${LATEST_TAG} .
             """.replace("^", "\\")
           } else {
             bat """
               docker build ^
                 -t %DOCKER_REPO%:%IMAGE_TAG% ^
-                -t %DOCKER_REPO%:%COMMIT_TAG% ^
                 -t %DOCKER_REPO%:%LATEST_TAG% .
             """
           }
@@ -111,13 +109,11 @@ pipeline {
           if (isUnix()) {
             sh """
               docker push ${DOCKER_REPO}:${IMAGE_TAG}
-              docker push ${DOCKER_REPO}:${COMMIT_TAG}
               docker push ${DOCKER_REPO}:${LATEST_TAG}
             """
           } else {
             bat """
               docker push %DOCKER_REPO%:%IMAGE_TAG%
-              docker push %DOCKER_REPO%:%COMMIT_TAG%
               docker push %DOCKER_REPO%:%LATEST_TAG%
             """
           }
