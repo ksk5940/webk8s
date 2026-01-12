@@ -23,7 +23,8 @@ let state = {
   resource: "pods",
   resources: [],
   search: "",
-  selectedPod: null,
+  selectedPod: null, // Keep for backward compatibility
+  selectedResource: null, // New: { name, type }
   activeTab: "overview",
   sse: null,
 };
@@ -64,10 +65,10 @@ async function init() {
       e.preventDefault();
       const tab = a.getAttribute("data-tab");
 
-      // Logs in NEW TAB
+      // Logs in NEW TAB (only for pods)
       if (tab === "logs") {
-        if (!state.selectedPod) return;
-        const url = `/logs.html?namespace=${encodeURIComponent(state.namespace)}&pod=${encodeURIComponent(state.selectedPod)}`;
+        if (!state.selectedResource || state.selectedResource.type !== "pod") return;
+        const url = `/logs.html?namespace=${encodeURIComponent(state.namespace)}&pod=${encodeURIComponent(state.selectedResource.name)}`;
         window.open(url, "_blank");
         return;
       }
@@ -75,7 +76,7 @@ async function init() {
       document.querySelectorAll(".drawer-tab").forEach(x => x.classList.remove("active"));
       a.classList.add("active");
       state.activeTab = tab;
-      renderDrawer();
+      renderResourceDrawer();
     };
   });
 
@@ -184,7 +185,7 @@ function renderTable() {
       const restarts = x.status?.restarts ?? 0;
       const node = x.status?.nodeName || "-";
       return `
-        <tr class="pod-row" data-name="${escapeHtml(x.name)}">
+        <tr class="resource-row" data-name="${escapeHtml(x.name)}" data-type="pod">
           <td class="fw-bold">${escapeHtml(x.name)}</td>
           <td>${escapeHtml(ready)}</td>
           <td>${st}</td>
@@ -195,8 +196,8 @@ function renderTable() {
       `;
     }).join("");
 
-    document.querySelectorAll(".pod-row").forEach(tr => {
-      tr.onclick = () => openPod(tr.getAttribute("data-name"));
+    document.querySelectorAll(".resource-row").forEach(tr => {
+      tr.onclick = () => openResource(tr.getAttribute("data-name"), tr.getAttribute("data-type"));
     });
   } else if (isNode) {
     UI.head().innerHTML = `
@@ -218,7 +219,7 @@ function renderTable() {
       const ip = x.status?.ip || "-";
       const os = x.status?.os || "-";
       return `
-        <tr>
+        <tr class="resource-row" data-name="${escapeHtml(x.name)}" data-type="node">
           <td class="fw-bold">${escapeHtml(x.name)}</td>
           <td>${status}</td>
           <td class="small-muted">${escapeHtml(role)}</td>
@@ -229,6 +230,10 @@ function renderTable() {
         </tr>
       `;
     }).join("");
+
+    document.querySelectorAll(".resource-row").forEach(tr => {
+      tr.onclick = () => openResource(tr.getAttribute("data-name"), tr.getAttribute("data-type"));
+    });
   } else {
     UI.head().innerHTML = `
       <tr>
@@ -241,116 +246,230 @@ function renderTable() {
     UI.body().innerHTML = items.map(x => {
       const status = statusBadgeWorkload(x.status);
       return `
-        <tr>
+        <tr class="resource-row" data-name="${escapeHtml(x.name)}" data-type="${state.resource}">
           <td class="fw-bold">${escapeHtml(x.name)}</td>
           <td>${status}</td>
           <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
         </tr>
       `;
     }).join("");
+
+    document.querySelectorAll(".resource-row").forEach(tr => {
+      tr.onclick = () => openResource(tr.getAttribute("data-name"), tr.getAttribute("data-type"));
+    });
   }
 }
 
-async function openPod(pod) {
-  state.selectedPod = pod;
+async function openResource(name, type) {
+  state.selectedResource = { name, type };
   state.activeTab = "overview";
 
   document.querySelectorAll(".drawer-tab").forEach(x => x.classList.remove("active"));
   document.querySelector(`.drawer-tab[data-tab="overview"]`).classList.add("active");
 
-  UI.drawerTitle().textContent = `Pod Details: ${pod}`;
-  UI.drawerSubtitle().textContent = `Namespace: ${state.namespace}`;
+  // Update drawer tabs visibility based on resource type
+  const logsTab = document.querySelector(`.drawer-tab[data-tab="logs"]`);
+  const eventsTab = document.querySelector(`.drawer-tab[data-tab="events"]`);
+  const metricsTab = document.querySelector(`.drawer-tab[data-tab="metrics"]`);
+
+  if (type === "pod") {
+    // Pods show all tabs
+    logsTab.style.display = "block";
+    eventsTab.style.display = "block";
+    metricsTab.style.display = "block";
+    state.selectedPod = name; // Keep backward compatibility
+  } else {
+    // Other resources don't show logs, events, metrics
+    logsTab.style.display = "none";
+    eventsTab.style.display = "none";
+    metricsTab.style.display = "none";
+  }
+
+  UI.drawerTitle().textContent = `${capitalize(type)} Details: ${name}`;
+  UI.drawerSubtitle().textContent = type === "node" ? "Cluster Node" : `Namespace: ${state.namespace}`;
   openDrawer();
 
-  await renderDrawer();
+  await renderResourceDrawer();
 }
 
-async function renderDrawer() {
-  const ns = state.namespace;
-  const pod = state.selectedPod;
-  if (!pod) return;
+// Keep backward compatibility for pods
+async function openPod(pod) {
+  await openResource(pod, "pod");
+}
+
+async function renderResourceDrawer() {
+  const { name, type } = state.selectedResource;
+  if (!name || !type) return;
 
   if (state.sse) { state.sse.close(); state.sse = null; }
 
   if (state.activeTab === "overview") {
-    const d = await apiGet(`/api/pod?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
-    UI.tabContent().innerHTML = `
-      <div class="kv-grid">
-        <div class="kv-key">Node</div><div class="kv-val">${escapeHtml(d.node)}</div>
-        <div class="kv-key">Status</div><div class="kv-val">${escapeHtml(d.phase)} ${d.reason ? "(" + escapeHtml(d.reason) + ")" : ""}</div>
-        <div class="kv-key">IP</div><div class="kv-val">${escapeHtml(d.podIP || "-")}</div>
-        <div class="kv-key">Ready</div><div class="kv-val">${escapeHtml(d.ready || "-")}</div>
-        <div class="kv-key">Restarts</div><div class="kv-val">${escapeHtml(d.restarts || 0)}</div>
-        <div class="kv-key">Started</div><div class="kv-val">${escapeHtml(d.startTime || "-")}</div>
-      </div>
-      <hr/>
-      <div style="font-weight: 700; margin-bottom: 16px;">Containers</div>
-      <ul style="list-style: none; padding: 0; margin: 0;">
-        ${(d.containers||[]).map(c => `
-          <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
-            <div style="font-weight: 600;">${escapeHtml(c.name)}</div>
-            <div class="small-muted">${escapeHtml(c.image)}</div>
-          </li>
-        `).join("")}
-      </ul>
-    `;
-
-  } else if (state.activeTab === "events") {
-    const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
-    if (!events || events.length === 0) {
-      UI.tabContent().innerHTML = `<div class="small-muted">No events found.</div>`;
-      return;
+    if (type === "pod") {
+      await renderPodOverview(name);
+    } else if (type === "node") {
+      await renderNodeOverview(name);
+    } else {
+      await renderGenericOverview(name, type);
     }
-
-    UI.tabContent().innerHTML = `
-      <div style="font-weight: 700; margin-bottom: 16px;">Events</div>
-      <div style="overflow-x: auto;">
-        <table class="table">
-          <thead class="table-head">
-            <tr><th>Type</th><th>Reason</th><th>Message</th><th>Time</th></tr>
-          </thead>
-          <tbody>
-            ${events.map(x => `
-              <tr>
-                <td>${escapeHtml(x.type || "")}</td>
-                <td class="fw-bold">${escapeHtml(x.reason || "")}</td>
-                <td>${escapeHtml(x.message || "")}</td>
-                <td class="small-muted">${escapeHtml(x.lastTimestamp || x.eventTime || x.firstTimestamp || "")}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    `;
-
-  } else if (state.activeTab === "metrics") {
-    const m = await apiGet(`/api/pod/metrics?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
-
-    if (m.available === false) {
-      UI.tabContent().innerHTML = `
-        <div style="padding: 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;">
-          <strong>Metrics not available</strong><br/>
-          ${escapeHtml(m.message || "")}
-        </div>
-      `;
-      return;
-    }
-
-    const totals = calcMetricsTotals(m);
-    UI.tabContent().innerHTML = `
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
-        <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
-          <div class="small-muted" style="margin-bottom: 8px;">CPU Usage</div>
-          <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.cpu}</div>
-        </div>
-        <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
-          <div class="small-muted" style="margin-bottom: 8px;">Memory Usage</div>
-          <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.mem}</div>
-        </div>
-      </div>
-      <div class="small-muted">Source: metrics.k8s.io/v1beta1</div>
-    `;
+  } else if (state.activeTab === "events" && type === "pod") {
+    await renderPodEvents(name);
+  } else if (state.activeTab === "metrics" && type === "pod") {
+    await renderPodMetrics(name);
   }
+}
+
+async function renderPodOverview(pod) {
+  const ns = state.namespace;
+  const d = await apiGet(`/api/pod?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+  UI.tabContent().innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">Node</div><div class="kv-val">${escapeHtml(d.node)}</div>
+      <div class="kv-key">Status</div><div class="kv-val">${escapeHtml(d.phase)} ${d.reason ? "(" + escapeHtml(d.reason) + ")" : ""}</div>
+      <div class="kv-key">IP</div><div class="kv-val">${escapeHtml(d.podIP || "-")}</div>
+      <div class="kv-key">Ready</div><div class="kv-val">${escapeHtml(d.ready || "-")}</div>
+      <div class="kv-key">Restarts</div><div class="kv-val">${escapeHtml(d.restarts || 0)}</div>
+      <div class="kv-key">Started</div><div class="kv-val">${escapeHtml(d.startTime || "-")}</div>
+    </div>
+    <hr/>
+    <div style="font-weight: 700; margin-bottom: 16px;">Containers</div>
+    <ul style="list-style: none; padding: 0; margin: 0;">
+      ${(d.containers||[]).map(c => `
+        <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <div style="font-weight: 600;">${escapeHtml(c.name)}</div>
+          <div class="small-muted">${escapeHtml(c.image)}</div>
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+async function renderNodeOverview(nodeName) {
+  // Find node details from current resources list
+  const node = state.resources.find(r => r.name === nodeName);
+  if (!node) {
+    UI.tabContent().innerHTML = `<div class="small-muted">Node details not found.</div>`;
+    return;
+  }
+
+  const status = node.status || {};
+  const labels = node.labels || {};
+  
+  // Extract key labels
+  const roleLabels = Object.keys(labels).filter(k => k.includes('node-role.kubernetes.io')).map(k => k.replace('node-role.kubernetes.io/', '')).join(', ') || 'worker';
+  
+  UI.tabContent().innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">Status</div><div class="kv-val">${statusBadgeNode(status)}</div>
+      <div class="kv-key">Role</div><div class="kv-val">${escapeHtml(roleLabels)}</div>
+      <div class="kv-key">Internal IP</div><div class="kv-val">${escapeHtml(status.ip || "-")}</div>
+      <div class="kv-key">Version</div><div class="kv-val">${escapeHtml(status.version || "-")}</div>
+      <div class="kv-key">OS</div><div class="kv-val">${escapeHtml(status.os || "-")}</div>
+      <div class="kv-key">Created</div><div class="kv-val">${fmtAge(node.creationTimestamp)}</div>
+    </div>
+    <hr/>
+    <div style="font-weight: 700; margin-bottom: 16px;">Labels</div>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      ${Object.entries(labels).slice(0, 10).map(([k, v]) => `
+        <span style="background: #e3f2fd; color: #1976d2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+          ${escapeHtml(k)}: ${escapeHtml(v)}
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function renderGenericOverview(name, type) {
+  // Find resource details from current resources list
+  const resource = state.resources.find(r => r.name === name);
+  if (!resource) {
+    UI.tabContent().innerHTML = `<div class="small-muted">Resource details not found.</div>`;
+    return;
+  }
+
+  const status = resource.status || {};
+  const labels = resource.labels || {};
+  
+  UI.tabContent().innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">Name</div><div class="kv-val">${escapeHtml(resource.name)}</div>
+      <div class="kv-key">Namespace</div><div class="kv-val">${escapeHtml(resource.namespace || state.namespace)}</div>
+      <div class="kv-key">Created</div><div class="kv-val">${fmtAge(resource.creationTimestamp)}</div>
+      ${Object.entries(status).map(([k, v]) => `
+        <div class="kv-key">${escapeHtml(capitalize(k))}</div>
+        <div class="kv-val">${typeof v === 'object' ? JSON.stringify(v) : escapeHtml(String(v))}</div>
+      `).join("")}
+    </div>
+    <hr/>
+    <div style="font-weight: 700; margin-bottom: 16px;">Labels</div>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      ${Object.entries(labels).slice(0, 10).map(([k, v]) => `
+        <span style="background: #e3f2fd; color: #1976d2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+          ${escapeHtml(k)}: ${escapeHtml(v)}
+        </span>
+      `).join("")}
+      ${Object.keys(labels).length > 10 ? `<span class="small-muted">+${Object.keys(labels).length - 10} more</span>` : ''}
+    </div>
+  `;
+}
+
+async function renderPodEvents(pod) {
+  const ns = state.namespace;
+  const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+  if (!events || events.length === 0) {
+    UI.tabContent().innerHTML = `<div class="small-muted">No events found.</div>`;
+    return;
+  }
+
+  UI.tabContent().innerHTML = `
+    <div style="font-weight: 700; margin-bottom: 16px;">Events</div>
+    <div style="overflow-x: auto;">
+      <table class="table">
+        <thead class="table-head">
+          <tr><th>Type</th><th>Reason</th><th>Message</th><th>Time</th></tr>
+        </thead>
+        <tbody>
+          ${events.map(x => `
+            <tr>
+              <td>${escapeHtml(x.type || "")}</td>
+              <td class="fw-bold">${escapeHtml(x.reason || "")}</td>
+              <td>${escapeHtml(x.message || "")}</td>
+              <td class="small-muted">${escapeHtml(x.lastTimestamp || x.eventTime || x.firstTimestamp || "")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function renderPodMetrics(pod) {
+  const ns = state.namespace;
+  const m = await apiGet(`/api/pod/metrics?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+
+  if (m.available === false) {
+    UI.tabContent().innerHTML = `
+      <div style="padding: 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;">
+        <strong>Metrics not available</strong><br/>
+        ${escapeHtml(m.message || "")}
+      </div>
+    `;
+    return;
+  }
+
+  const totals = calcMetricsTotals(m);
+  UI.tabContent().innerHTML = `
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+      <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+        <div class="small-muted" style="margin-bottom: 8px;">CPU Usage</div>
+        <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.cpu}</div>
+      </div>
+      <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+        <div class="small-muted" style="margin-bottom: 8px;">Memory Usage</div>
+        <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.mem}</div>
+      </div>
+    </div>
+    <div class="small-muted">Source: metrics.k8s.io/v1beta1</div>
+  `;
 }
 
 function calcMetricsTotals(metricsObj) {
