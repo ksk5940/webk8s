@@ -23,7 +23,7 @@
   </div>
 
   <div class="logs-wrap">
-    <div class="logs-box" id="logBox"></div>
+    <div class="logs-box" id="logBox">Loading logs...</div>
   </div>
 
 <script>
@@ -44,42 +44,105 @@
 
   let sse = null;
   let selectedContainer = "";
+  let logBuffer = [];
+  let isStreaming = false;
 
   function stopStream(){
     if (sse) {
-      try { sse.close(); } catch {}
+      try { 
+        sse.close(); 
+        isStreaming = false;
+      } catch(e) {
+        console.error("Error closing stream:", e);
+      }
       sse = null;
     }
   }
 
   function startStream(){
     stopStream();
-    box.textContent = "";
+    box.textContent = "Connecting to log stream...";
+    logBuffer = [];
 
     let url = `/api/logs/stream?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`;
     if (selectedContainer) {
       url += `&container=${encodeURIComponent(selectedContainer)}`;
     }
 
+    console.log("Starting log stream:", url);
+
     sse = new EventSource(url);
-    sse.onmessage = (e) => {
-      box.textContent += e.data;
-      box.scrollTop = box.scrollHeight;
+    
+    let firstMessage = true;
+    
+    sse.onopen = () => {
+      console.log("Log stream connected");
+      isStreaming = true;
+      if (firstMessage) {
+        box.textContent = "";
+        firstMessage = false;
+      }
     };
-    sse.onerror = () => {
-      box.textContent += "\n[log stream disconnected]\n";
+    
+    sse.onmessage = (e) => {
+      if (firstMessage) {
+        box.textContent = "";
+        firstMessage = false;
+      }
+      
+      const data = e.data;
+      
+      // Skip if it's an error message we've already seen
+      if (data.includes("ERROR:") && logBuffer.includes(data)) {
+        return;
+      }
+      
+      logBuffer.push(data);
+      box.textContent += data;
+      
+      // Auto-scroll to bottom
+      box.scrollTop = box.scrollHeight;
+      
+      // Keep only last 1000 lines in buffer
+      if (logBuffer.length > 1000) {
+        logBuffer = logBuffer.slice(-1000);
+        const lines = box.textContent.split('\n').slice(-1000);
+        box.textContent = lines.join('\n');
+      }
+    };
+    
+    sse.onerror = (err) => {
+      console.error("Log stream error:", err);
+      if (!isStreaming) {
+        box.textContent += "\n\n[Failed to connect to log stream. The pod may not be running or logs may not be available.]\n";
+      } else {
+        box.textContent += "\n\n[Log stream disconnected]\n";
+      }
+      stopStream();
     };
   }
 
   async function loadContainers(){
-    const r = await fetch(`/api/pod/containers?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
-    if (!r.ok) return null;
-    return r.json();
+    try {
+      const r = await fetch(`/api/pod/containers?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+      if (!r.ok) {
+        console.error("Failed to fetch containers:", r.status);
+        return null;
+      }
+      return r.json();
+    } catch (err) {
+      console.error("Error loading containers:", err);
+      return null;
+    }
   }
 
   function buildContainerDropdown(containers, initContainers){
     const totalCount = (containers?.length || 0) + (initContainers?.length || 0);
-    if (totalCount <= 1) return;
+    
+    // Only show dropdown if there are multiple containers
+    if (totalCount <= 1) {
+      return;
+    }
 
     containerSelect.style.display = "block";
 
@@ -98,25 +161,40 @@
     containerSelect.innerHTML = html;
     containerSelect.onchange = () => {
       selectedContainer = containerSelect.value || "";
+      console.log("Container changed to:", selectedContainer);
       startStream();
     };
   }
 
   (async function(){
     if (!ns || !pod) {
-      box.textContent = "ERROR: namespace/pod missing.\nExample: /logs.html?namespace=default&pod=nginx-xxx";
+      box.textContent = "ERROR: namespace/pod missing.\n\nUsage: /logs.html?namespace=default&pod=nginx-xxx";
       return;
     }
 
     const info = await loadContainers();
-    const containers = info?.containers || [];
-    const initContainers = info?.initContainers || [];
+    if (info) {
+      const containers = info.containers || [];
+      const initContainers = info.initContainers || [];
+      buildContainerDropdown(containers, initContainers);
+    }
 
-    buildContainerDropdown(containers, initContainers);
     startStream();
   })();
 
   window.addEventListener("beforeunload", () => stopStream());
+  
+  // Cleanup on page visibility change
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      console.log("Page hidden, keeping stream alive");
+    } else {
+      console.log("Page visible");
+      if (!isStreaming) {
+        startStream();
+      }
+    }
+  });
 </script>
 </body>
 </html>

@@ -9,26 +9,34 @@ kind: ClusterRole
 metadata:
   name: webk8s-role
 rules:
+  # Core resources
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get","list","watch"]
 
   - apiGroups: [""]
-    resources: ["pods","services","configmaps","secrets","events"]
+    resources: ["nodes"]
+    verbs: ["get","list","watch"]
+
+  - apiGroups: [""]
+    resources: ["pods","services","configmaps","events"]
     verbs: ["get","list","watch"]
 
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
 
+  # Apps workloads
   - apiGroups: ["apps"]
     resources: ["deployments","replicasets","statefulsets","daemonsets"]
     verbs: ["get","list","watch"]
 
+  # Batch workloads
   - apiGroups: ["batch"]
     resources: ["jobs","cronjobs"]
     verbs: ["get","list","watch"]
 
+  # Metrics (optional - requires metrics-server)
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get","list"]

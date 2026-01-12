@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,7 @@ import (
 
 var resourceTypes = []map[string]string{
 	{"key": "pods", "label": "Pods"},
+	{"key": "nodes", "label": "Nodes"},
 	{"key": "deployments", "label": "Deployments"},
 	{"key": "replicasets", "label": "ReplicaSets"},
 	{"key": "statefulsets", "label": "StatefulSets"},
@@ -22,7 +24,6 @@ var resourceTypes = []map[string]string{
 	{"key": "jobs", "label": "Jobs"},
 	{"key": "cronjobs", "label": "CronJobs"},
 	{"key": "configmaps", "label": "ConfigMaps"},
-	{"key": "secrets", "label": "Secrets"},
 	{"key": "services", "label": "Services"},
 }
 
@@ -32,15 +33,24 @@ func GetResourceTypes(c *gin.Context) {
 
 func GetNamespaces(c *gin.Context) {
 	client := k8s.Clientset()
-	list, err := client.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+
+	// Add timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	list, err := client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
+		log.Printf("Error listing namespaces: %v", err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
 	out := []string{}
 	for _, ns := range list.Items {
 		out = append(out, ns.Name)
 	}
+
+	log.Printf("Found %d namespaces: %v", len(out), out)
 	c.JSON(200, out)
 }
 
@@ -48,8 +58,18 @@ func ListResources(c *gin.Context) {
 	ns := c.Query("namespace")
 	rtype := c.Query("type")
 
+	if ns == "" {
+		c.JSON(400, gin.H{"error": "namespace parameter is required"})
+		return
+	}
+	if rtype == "" {
+		c.JSON(400, gin.H{"error": "type parameter is required"})
+		return
+	}
+
 	rows, err := k8s.ListResources(ns, rtype)
 	if err != nil {
+		log.Printf("Error listing resources (ns=%s, type=%s): %v", ns, rtype, err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -60,9 +80,15 @@ func GetPodDetails(c *gin.Context) {
 	ns := c.Query("namespace")
 	podName := c.Query("pod")
 
+	if ns == "" || podName == "" {
+		c.JSON(400, gin.H{"error": "namespace and pod parameters are required"})
+		return
+	}
+
 	client := k8s.Clientset()
 	pod, err := client.CoreV1().Pods(ns).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
+		log.Printf("Error getting pod details (ns=%s, pod=%s): %v", ns, podName, err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -93,14 +119,19 @@ func GetPodDetails(c *gin.Context) {
 	})
 }
 
-// ✅ NEW: Pod containers list (containers + initContainers)
 func GetPodContainers(c *gin.Context) {
 	ns := c.Query("namespace")
 	podName := c.Query("pod")
 
+	if ns == "" || podName == "" {
+		c.JSON(400, gin.H{"error": "namespace and pod parameters are required"})
+		return
+	}
+
 	client := k8s.Clientset()
 	pod, err := client.CoreV1().Pods(ns).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
+		log.Printf("Error getting pod containers (ns=%s, pod=%s): %v", ns, podName, err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -125,11 +156,17 @@ func GetPodEvents(c *gin.Context) {
 	ns := c.Query("namespace")
 	podName := c.Query("pod")
 
+	if ns == "" || podName == "" {
+		c.JSON(400, gin.H{"error": "namespace and pod parameters are required"})
+		return
+	}
+
 	client := k8s.Clientset()
 	ev, err := client.CoreV1().Events(ns).List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "involvedObject.name=" + podName,
 	})
 	if err != nil {
+		log.Printf("Error getting pod events (ns=%s, pod=%s): %v", ns, podName, err)
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -140,8 +177,14 @@ func GetPodMetrics(c *gin.Context) {
 	ns := c.Query("namespace")
 	podName := c.Query("pod")
 
+	if ns == "" || podName == "" {
+		c.JSON(400, gin.H{"error": "namespace and pod parameters are required"})
+		return
+	}
+
 	raw, err := k8s.GetPodMetrics(ns, podName)
 	if err != nil {
+		log.Printf("Metrics not available (ns=%s, pod=%s): %v", ns, podName, err)
 		c.JSON(200, gin.H{
 			"available": false,
 			"message":   "metrics not available (metrics-server missing or RBAC)",
@@ -157,45 +200,89 @@ func GetPodMetrics(c *gin.Context) {
 	c.JSON(200, obj)
 }
 
-// ✅ UPDATED: logs stream supports container
 func StreamPodLogsSSE(c *gin.Context) {
 	ns := c.Query("namespace")
 	podName := c.Query("pod")
-
-	// ✅ new query param
 	container := c.Query("container")
 
-	tail := int64(50)
+	if ns == "" || podName == "" {
+		c.SSEvent("message", "ERROR: namespace and pod parameters are required\n")
+		return
+	}
+
+	log.Printf("Starting log stream: ns=%s, pod=%s, container=%s", ns, podName, container)
+
 	client := k8s.Clientset()
 
+	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
+	// First, check if pod exists
+	pod, err := client.CoreV1().Pods(ns).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Pod not found (ns=%s, pod=%s): %v", ns, podName, err)
+		c.SSEvent("message", fmt.Sprintf("ERROR: Pod not found: %v\n", err))
+		return
+	}
+
+	// If container specified, verify it exists
+	if container != "" {
+		found := false
+		for _, ct := range pod.Spec.Containers {
+			if ct.Name == container {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, ct := range pod.Spec.InitContainers {
+				if ct.Name == container {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			c.SSEvent("message", fmt.Sprintf("ERROR: Container '%s' not found in pod\n", container))
+			return
+		}
+	}
+
+	tail := int64(100)
 	req := client.CoreV1().Pods(ns).GetLogs(podName, &v1.PodLogOptions{
-		Container: container, // ✅ support specific container
+		Container: container,
 		Follow:    true,
 		TailLines: &tail,
 	})
 
 	stream, err := req.Stream(context.TODO())
 	if err != nil {
-		c.SSEvent("message", fmt.Sprintf("ERROR: %v", err))
+		log.Printf("Error opening log stream (ns=%s, pod=%s, container=%s): %v", ns, podName, container, err)
+		c.SSEvent("message", fmt.Sprintf("ERROR: Cannot open log stream: %v\n", err))
 		return
 	}
 	defer stream.Close()
+
+	log.Printf("Log stream opened successfully")
 
 	buf := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buf)
 		if n > 0 {
-			c.SSEvent("message", string(buf[:n]))
+			logLine := string(buf[:n])
+			c.SSEvent("message", logLine)
 			c.Writer.Flush()
 		}
 		if err != nil {
+			if err.Error() != "EOF" {
+				log.Printf("Log stream read error: %v", err)
+			}
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -27,6 +27,62 @@ func ListResources(namespace, rtype string) ([]ResourceRow, error) {
 	// -----------------------------
 	// Core resources
 	// -----------------------------
+	case "nodes":
+		list, err := cs.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]ResourceRow, 0, len(list.Items))
+		for i := range list.Items {
+			node := &list.Items[i]
+
+			// Determine node status
+			ready := "NotReady"
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == v1.NodeReady {
+					if cond.Status == v1.ConditionTrue {
+						ready = "Ready"
+					}
+					break
+				}
+			}
+
+			// Get node roles
+			roles := "worker"
+			if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
+				roles = "master"
+			} else if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
+				roles = "control-plane"
+			}
+
+			// Get node version
+			version := node.Status.NodeInfo.KubeletVersion
+
+			// Get node internal IP
+			nodeIP := ""
+			for _, addr := range node.Status.Addresses {
+				if addr.Type == v1.NodeInternalIP {
+					nodeIP = addr.Address
+					break
+				}
+			}
+
+			out = append(out, ResourceRow{
+				Name:              node.Name,
+				Namespace:         "",
+				CreationTimestamp: node.CreationTimestamp.Time.Format("2006-01-02T15:04:05Z"),
+				Labels:            node.Labels,
+				Status: map[string]any{
+					"ready":   ready,
+					"role":    roles,
+					"version": version,
+					"ip":      nodeIP,
+					"os":      node.Status.NodeInfo.OSImage,
+				},
+			})
+		}
+		return out, nil
+
 	case "pods":
 		list, err := cs.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
@@ -91,26 +147,6 @@ func ListResources(namespace, rtype string) ([]ResourceRow, error) {
 				Labels:            cm.Labels,
 				Status: map[string]any{
 					"keys": len(cm.Data),
-				},
-			})
-		}
-		return out, nil
-
-	case "secrets":
-		list, err := cs.CoreV1().Secrets(namespace).List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		out := make([]ResourceRow, 0, len(list.Items))
-		for i := range list.Items {
-			s := &list.Items[i]
-			out = append(out, ResourceRow{
-				Name:              s.Name,
-				Namespace:         s.Namespace,
-				CreationTimestamp: s.CreationTimestamp.Time.Format("2006-01-02T15:04:05Z"),
-				Labels:            s.Labels,
-				Status: map[string]any{
-					"type": string(s.Type),
 				},
 			})
 		}

@@ -1,3 +1,21 @@
+// API helper with better error handling
+async function apiGet(path) {
+  console.log("API GET:", path);
+  try {
+    const res = await fetch(path);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HTTP ${res.status}: ${text}`);
+    }
+    const data = await res.json();
+    console.log("API response:", data);
+    return data;
+  } catch (err) {
+    console.error("API error:", err);
+    throw err;
+  }
+}
+
 let state = {
   namespaces: [],
   resourceTypes: [],
@@ -16,6 +34,12 @@ function statusBadgePod(st) {
   if (phase === "Pending") return `<span class="badge-warn">Pending</span>`;
   if (phase === "Completed") return `<span class="badge-run">Completed</span>`;
   return `<span class="badge-bad">${escapeHtml(phase)}</span>`;
+}
+
+function statusBadgeNode(st) {
+  const ready = st?.ready || "Unknown";
+  if (ready === "Ready") return `<span class="badge-run">Ready</span>`;
+  return `<span class="badge-bad">NotReady</span>`;
 }
 
 function statusBadgeWorkload(st) {
@@ -55,31 +79,47 @@ async function init() {
     };
   });
 
-  state.namespaces = await apiGet("/api/namespaces");
-  state.resourceTypes = await apiGet("/api/resources/types");
+  try {
+    // Fetch namespaces with error handling
+    console.log("Fetching namespaces...");
+    state.namespaces = await apiGet("/api/namespaces");
+    console.log("Namespaces received:", state.namespaces);
+    
+    state.resourceTypes = await apiGet("/api/resources/types");
+    console.log("Resource types received:", state.resourceTypes);
 
-  UI.nsSel().innerHTML = state.namespaces.map(ns => `<option value="${ns}">${ns}</option>`).join("");
+    if (!state.namespaces || state.namespaces.length === 0) {
+      alert("No namespaces found. Check RBAC permissions.");
+      return;
+    }
 
-  if (state.namespaces.includes("default")) state.namespace = "default";
-  else if (state.namespaces.length > 0) state.namespace = state.namespaces[0];
+    UI.nsSel().innerHTML = state.namespaces.map(ns => `<option value="${ns}">${ns}</option>`).join("");
 
-  UI.nsSel().value = state.namespace;
-  UI.nsSel().onchange = async (e) => {
-    state.namespace = e.target.value;
-    closeDrawer();
+    if (state.namespaces.includes("default")) state.namespace = "default";
+    else if (state.namespaces.includes("kube-system")) state.namespace = "kube-system";
+    else if (state.namespaces.length > 0) state.namespace = state.namespaces[0];
+
+    UI.nsSel().value = state.namespace;
+    UI.nsSel().onchange = async (e) => {
+      state.namespace = e.target.value;
+      closeDrawer();
+      await refreshAll();
+    };
+
+    buildResourceTabs();
+
+    state.resource = "pods";
+    setActiveResourceTab("pods");
+
     await refreshAll();
-  };
-
-  buildResourceTabs();
-
-  state.resource = "pods";
-  setActiveResourceTab("pods");
-
-  await refreshAll();
+  } catch (err) {
+    console.error("Initialization error:", err);
+    alert("Failed to initialize: " + err.message);
+  }
 }
 
 function buildResourceTabs() {
-  const order = ["pods","deployments","replicasets","statefulsets","daemonsets","jobs","cronjobs","configmaps","secrets","services"];
+  const order = ["pods","nodes","deployments","replicasets","statefulsets","daemonsets","jobs","cronjobs","configmaps","services"];
   const typesByKey = {};
   state.resourceTypes.forEach(t => typesByKey[t.key] = t.label);
 
@@ -108,9 +148,15 @@ function setActiveResourceTab(key) {
 }
 
 async function refreshAll() {
-  UI.title().textContent = capitalize(state.resource);
-  state.resources = await apiGet(`/api/resources?namespace=${encodeURIComponent(state.namespace)}&type=${encodeURIComponent(state.resource)}`);
-  renderTable();
+  try {
+    UI.title().textContent = capitalize(state.resource);
+    state.resources = await apiGet(`/api/resources?namespace=${encodeURIComponent(state.namespace)}&type=${encodeURIComponent(state.resource)}`);
+    renderTable();
+  } catch (err) {
+    console.error("Refresh error:", err);
+    UI.countInfo().textContent = "Error loading data";
+    UI.body().innerHTML = `<tr><td colspan="6" style="text-align:center;padding:40px;color:#dc3545;">Failed to load ${state.resource}: ${err.message}</td></tr>`;
+  }
 }
 
 function renderTable() {
@@ -118,6 +164,7 @@ function renderTable() {
   UI.countInfo().textContent = `${items.length} items`;
 
   const isPod = state.resource === "pods";
+  const isNode = state.resource === "nodes";
 
   if (isPod) {
     UI.head().innerHTML = `
@@ -151,6 +198,37 @@ function renderTable() {
     document.querySelectorAll(".pod-row").forEach(tr => {
       tr.onclick = () => openPod(tr.getAttribute("data-name"));
     });
+  } else if (isNode) {
+    UI.head().innerHTML = `
+      <tr>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Role</th>
+        <th>Version</th>
+        <th>Internal IP</th>
+        <th>OS</th>
+        <th>Age</th>
+      </tr>
+    `;
+
+    UI.body().innerHTML = items.map(x => {
+      const status = statusBadgeNode(x.status);
+      const role = x.status?.role || "-";
+      const version = x.status?.version || "-";
+      const ip = x.status?.ip || "-";
+      const os = x.status?.os || "-";
+      return `
+        <tr>
+          <td class="fw-bold">${escapeHtml(x.name)}</td>
+          <td>${status}</td>
+          <td class="small-muted">${escapeHtml(role)}</td>
+          <td class="small-muted">${escapeHtml(version)}</td>
+          <td class="small-muted">${escapeHtml(ip)}</td>
+          <td class="small-muted">${escapeHtml(os)}</td>
+          <td class="small-muted">${fmtAge(x.creationTimestamp)}</td>
+        </tr>
+      `;
+    }).join("");
   } else {
     UI.head().innerHTML = `
       <tr>
@@ -218,7 +296,7 @@ async function renderDrawer() {
     `;
 
   } else if (state.activeTab === "events") {
-    const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encapeURIComponent(pod)}`);
+    const events = await apiGet(`/api/pod/events?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
     if (!events || events.length === 0) {
       UI.tabContent().innerHTML = `<div class="small-muted">No events found.</div>`;
       return;
