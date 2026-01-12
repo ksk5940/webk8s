@@ -16,9 +16,12 @@ No pod exec feature (safe).
 
 #Using helm we can deploy
 
-helm upgrade webk8s . -n kube-system -f values.yaml
+helm upgrade --install webk8s . -n kube-system -f values.yaml
 
+
+helm upgrade webk8s . -n kube-system -f values.yaml
 kubectl -n kube-system rollout restart deployment webk8s
+
 
 kubectl -n kube-system port-forward svc/webk8s 8080:80
 
