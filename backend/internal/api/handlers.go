@@ -34,7 +34,6 @@ func GetResourceTypes(c *gin.Context) {
 func GetNamespaces(c *gin.Context) {
 	client := k8s.Clientset()
 
-	// Add timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -58,7 +57,7 @@ func ListResources(c *gin.Context) {
 	ns := c.Query("namespace")
 	rtype := c.Query("type")
 
-	if ns == "" {
+	if ns == "" && rtype != "nodes" {
 		c.JSON(400, gin.H{"error": "namespace parameter is required"})
 		return
 	}
@@ -116,6 +115,173 @@ func GetPodDetails(c *gin.Context) {
 		"ready":      fmt.Sprintf("%d/%d", ready, total),
 		"restarts":   restarts,
 		"containers": containers,
+	})
+}
+
+// NEW: Get Node Details with pods running on it
+func GetNodeDetails(c *gin.Context) {
+	nodeName := c.Query("node")
+
+	if nodeName == "" {
+		c.JSON(400, gin.H{"error": "node parameter is required"})
+		return
+	}
+
+	client := k8s.Clientset()
+
+	// Get node info
+	node, err := client.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Error getting node details (node=%s): %v", nodeName, err)
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get pods running on this node
+	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + nodeName,
+	})
+	if err != nil {
+		log.Printf("Error listing pods on node %s: %v", nodeName, err)
+	}
+
+	podList := []map[string]string{}
+	if pods != nil {
+		for _, pod := range pods.Items {
+			podList = append(podList, map[string]string{
+				"name":      pod.Name,
+				"namespace": pod.Namespace,
+				"status":    string(pod.Status.Phase),
+			})
+		}
+	}
+
+	// Determine node status
+	ready := "NotReady"
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == v1.NodeReady {
+			if cond.Status == v1.ConditionTrue {
+				ready = "Ready"
+			}
+			break
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"name":        node.Name,
+		"status":      ready,
+		"labels":      node.Labels,
+		"podCount":    len(podList),
+		"pods":        podList,
+		"capacity":    node.Status.Capacity,
+		"allocatable": node.Status.Allocatable,
+	})
+}
+
+// NEW: Get Node Metrics
+func GetNodeMetrics(c *gin.Context) {
+	nodeName := c.Query("node")
+
+	if nodeName == "" {
+		c.JSON(400, gin.H{"error": "node parameter is required"})
+		return
+	}
+
+	raw, err := k8s.GetNodeMetrics(nodeName)
+	if err != nil {
+		log.Printf("Node metrics not available (node=%s): %v", nodeName, err)
+		c.JSON(200, gin.H{
+			"available": false,
+			"message":   "metrics not available (metrics-server missing or RBAC)",
+		})
+		return
+	}
+
+	var obj any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		c.JSON(200, gin.H{"available": false, "message": "failed to parse metrics"})
+		return
+	}
+	c.JSON(200, obj)
+}
+
+// NEW: Get Service Details with endpoints
+func GetServiceDetails(c *gin.Context) {
+	ns := c.Query("namespace")
+	svcName := c.Query("service")
+
+	if ns == "" || svcName == "" {
+		c.JSON(400, gin.H{"error": "namespace and service parameters are required"})
+		return
+	}
+
+	client := k8s.Clientset()
+
+	// Get service
+	svc, err := client.CoreV1().Services(ns).Get(context.TODO(), svcName, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Error getting service details (ns=%s, svc=%s): %v", ns, svcName, err)
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get endpoints
+	endpoints, err := client.CoreV1().Endpoints(ns).Get(context.TODO(), svcName, metav1.GetOptions{})
+	endpointsList := []string{}
+	if err == nil && endpoints != nil {
+		for _, subset := range endpoints.Subsets {
+			for _, addr := range subset.Addresses {
+				for _, port := range subset.Ports {
+					endpointsList = append(endpointsList, fmt.Sprintf("%s:%d", addr.IP, port.Port))
+				}
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"name":      svc.Name,
+		"namespace": svc.Namespace,
+		"type":      string(svc.Spec.Type),
+		"clusterIP": svc.Spec.ClusterIP,
+		"ports":     svc.Spec.Ports,
+		"selector":  svc.Spec.Selector,
+		"labels":    svc.Labels,
+		"endpoints": endpointsList,
+	})
+}
+
+// NEW: Get ConfigMap Details with keys
+func GetConfigMapDetails(c *gin.Context) {
+	ns := c.Query("namespace")
+	cmName := c.Query("configmap")
+
+	if ns == "" || cmName == "" {
+		c.JSON(400, gin.H{"error": "namespace and configmap parameters are required"})
+		return
+	}
+
+	client := k8s.Clientset()
+	cm, err := client.CoreV1().ConfigMaps(ns).Get(context.TODO(), cmName, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Error getting configmap details (ns=%s, cm=%s): %v", ns, cmName, err)
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	keys := []string{}
+	for k := range cm.Data {
+		keys = append(keys, k)
+	}
+	for k := range cm.BinaryData {
+		keys = append(keys, k)
+	}
+
+	c.JSON(200, gin.H{
+		"name":      cm.Name,
+		"namespace": cm.Namespace,
+		"labels":    cm.Labels,
+		"keys":      keys,
+		"keyCount":  len(keys),
 	})
 }
 
@@ -187,7 +353,7 @@ func GetPodMetrics(c *gin.Context) {
 		log.Printf("Metrics not available (ns=%s, pod=%s): %v", ns, podName, err)
 		c.JSON(200, gin.H{
 			"available": false,
-			"message":   "metrics not available (metrics-server missing or RBAC)",
+			"message":   fmt.Sprintf("metrics not available: %v", err),
 		})
 		return
 	}
@@ -197,6 +363,14 @@ func GetPodMetrics(c *gin.Context) {
 		c.JSON(200, gin.H{"available": false, "message": "failed to parse metrics"})
 		return
 	}
+
+	// Add available flag for easier frontend handling
+	if result, ok := obj.(map[string]any); ok {
+		result["available"] = true
+		c.JSON(200, result)
+		return
+	}
+
 	c.JSON(200, obj)
 }
 
@@ -214,14 +388,12 @@ func StreamPodLogsSSE(c *gin.Context) {
 
 	client := k8s.Clientset()
 
-	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// First, check if pod exists
 	pod, err := client.CoreV1().Pods(ns).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
 		log.Printf("Pod not found (ns=%s, pod=%s): %v", ns, podName, err)
@@ -229,7 +401,6 @@ func StreamPodLogsSSE(c *gin.Context) {
 		return
 	}
 
-	// If container specified, verify it exists
 	if container != "" {
 		found := false
 		for _, ct := range pod.Spec.Containers {

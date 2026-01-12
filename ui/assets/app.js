@@ -23,10 +23,12 @@ let state = {
   resource: "pods",
   resources: [],
   search: "",
-  selectedPod: null, // Keep for backward compatibility
-  selectedResource: null, // New: { name, type }
+  selectedPod: null,
+  selectedResource: null,
   activeTab: "overview",
   sse: null,
+  sortColumn: null,
+  sortDirection: "asc",
 };
 
 function statusBadgePod(st) {
@@ -59,13 +61,11 @@ async function init() {
     renderTable();
   };
 
-  // drawer tabs
   document.querySelectorAll(".drawer-tab").forEach(a => {
     a.onclick = (e) => {
       e.preventDefault();
       const tab = a.getAttribute("data-tab");
 
-      // Logs in NEW TAB (only for pods)
       if (tab === "logs") {
         if (!state.selectedResource || state.selectedResource.type !== "pod") return;
         const url = `/logs.html?namespace=${encodeURIComponent(state.namespace)}&pod=${encodeURIComponent(state.selectedResource.name)}`;
@@ -81,7 +81,6 @@ async function init() {
   });
 
   try {
-    // Fetch namespaces with error handling
     console.log("Fetching namespaces...");
     state.namespaces = await apiGet("/api/namespaces");
     console.log("Namespaces received:", state.namespaces);
@@ -135,6 +134,8 @@ function buildResourceTabs() {
       e.preventDefault();
       const key = a.getAttribute("data-key");
       state.resource = key;
+      state.sortColumn = null;
+      state.sortDirection = "asc";
       closeDrawer();
       setActiveResourceTab(key);
       await refreshAll();
@@ -151,17 +152,89 @@ function setActiveResourceTab(key) {
 async function refreshAll() {
   try {
     UI.title().textContent = capitalize(state.resource);
-    state.resources = await apiGet(`/api/resources?namespace=${encodeURIComponent(state.namespace)}&type=${encodeURIComponent(state.resource)}`);
+    const ns = state.resource === "nodes" ? "" : state.namespace;
+    state.resources = await apiGet(`/api/resources?namespace=${encodeURIComponent(ns)}&type=${encodeURIComponent(state.resource)}`);
     renderTable();
   } catch (err) {
     console.error("Refresh error:", err);
     UI.countInfo().textContent = "Error loading data";
-    UI.body().innerHTML = `<tr><td colspan="6" style="text-align:center;padding:40px;color:#dc3545;">Failed to load ${state.resource}: ${err.message}</td></tr>`;
+    UI.body().innerHTML = `<tr><td colspan="10" style="text-align:center;padding:40px;color:#dc3545;">Failed to load ${state.resource}: ${err.message}</td></tr>`;
   }
 }
 
+function sortTable(column) {
+  if (state.sortColumn === column) {
+    state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    state.sortColumn = column;
+    state.sortDirection = "asc";
+  }
+  renderTable();
+}
+
+function getSortedAndFilteredItems() {
+  let items = [...state.resources];
+  
+  // Filter by search (checks all string values)
+  if (state.search) {
+    items = items.filter(x => {
+      const searchStr = state.search.toLowerCase();
+      // Search in name
+      if (x.name.toLowerCase().includes(searchStr)) return true;
+      // Search in namespace
+      if (x.namespace && x.namespace.toLowerCase().includes(searchStr)) return true;
+      // Search in status fields
+      if (x.status) {
+        for (let key in x.status) {
+          const val = String(x.status[key]).toLowerCase();
+          if (val.includes(searchStr)) return true;
+        }
+      }
+      return false;
+    });
+  }
+  
+  // Sort
+  if (state.sortColumn) {
+    items.sort((a, b) => {
+      let aVal, bVal;
+      
+      if (state.sortColumn === "name") {
+        aVal = a.name;
+        bVal = b.name;
+      } else if (state.sortColumn === "age") {
+        aVal = new Date(a.creationTimestamp).getTime();
+        bVal = new Date(b.creationTimestamp).getTime();
+      } else if (a.status && a.status[state.sortColumn] !== undefined) {
+        aVal = a.status[state.sortColumn];
+        bVal = b.status[state.sortColumn];
+      } else {
+        return 0;
+      }
+      
+      if (typeof aVal === "string") {
+        aVal = aVal.toLowerCase();
+        bVal = bVal.toLowerCase();
+      }
+      
+      if (state.sortDirection === "asc") {
+        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+      } else {
+        return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+      }
+    });
+  }
+  
+  return items;
+}
+
+function renderSortIcon(column) {
+  if (state.sortColumn !== column) return "";
+  return state.sortDirection === "asc" ? " ▲" : " ▼";
+}
+
 function renderTable() {
-  const items = state.resources.filter(x => !state.search || x.name.toLowerCase().includes(state.search));
+  const items = getSortedAndFilteredItems();
   UI.countInfo().textContent = `${items.length} items`;
 
   const isPod = state.resource === "pods";
@@ -170,12 +243,12 @@ function renderTable() {
   if (isPod) {
     UI.head().innerHTML = `
       <tr>
-        <th>Name</th>
+        <th onclick="sortTable('name')" style="cursor:pointer">Name${renderSortIcon('name')}</th>
         <th>Ready</th>
-        <th>Status</th>
-        <th>Restarts</th>
-        <th>Node</th>
-        <th>Age</th>
+        <th onclick="sortTable('phase')" style="cursor:pointer">Status${renderSortIcon('phase')}</th>
+        <th onclick="sortTable('restarts')" style="cursor:pointer">Restarts${renderSortIcon('restarts')}</th>
+        <th onclick="sortTable('nodeName')" style="cursor:pointer">Node${renderSortIcon('nodeName')}</th>
+        <th onclick="sortTable('age')" style="cursor:pointer">Age${renderSortIcon('age')}</th>
       </tr>
     `;
 
@@ -202,13 +275,13 @@ function renderTable() {
   } else if (isNode) {
     UI.head().innerHTML = `
       <tr>
-        <th>Name</th>
-        <th>Status</th>
-        <th>Role</th>
-        <th>Version</th>
-        <th>Internal IP</th>
+        <th onclick="sortTable('name')" style="cursor:pointer">Name${renderSortIcon('name')}</th>
+        <th onclick="sortTable('ready')" style="cursor:pointer">Status${renderSortIcon('ready')}</th>
+        <th onclick="sortTable('role')" style="cursor:pointer">Role${renderSortIcon('role')}</th>
+        <th onclick="sortTable('version')" style="cursor:pointer">Version${renderSortIcon('version')}</th>
+        <th onclick="sortTable('ip')" style="cursor:pointer">Internal IP${renderSortIcon('ip')}</th>
         <th>OS</th>
-        <th>Age</th>
+        <th onclick="sortTable('age')" style="cursor:pointer">Age${renderSortIcon('age')}</th>
       </tr>
     `;
 
@@ -237,9 +310,9 @@ function renderTable() {
   } else {
     UI.head().innerHTML = `
       <tr>
-        <th>Name</th>
+        <th onclick="sortTable('name')" style="cursor:pointer">Name${renderSortIcon('name')}</th>
         <th>Ready</th>
-        <th>Age</th>
+        <th onclick="sortTable('age')" style="cursor:pointer">Age${renderSortIcon('age')}</th>
       </tr>
     `;
 
@@ -267,22 +340,32 @@ async function openResource(name, type) {
   document.querySelectorAll(".drawer-tab").forEach(x => x.classList.remove("active"));
   document.querySelector(`.drawer-tab[data-tab="overview"]`).classList.add("active");
 
-  // Update drawer tabs visibility based on resource type
   const logsTab = document.querySelector(`.drawer-tab[data-tab="logs"]`);
   const eventsTab = document.querySelector(`.drawer-tab[data-tab="events"]`);
   const metricsTab = document.querySelector(`.drawer-tab[data-tab="metrics"]`);
+  const keysTab = document.querySelector(`.drawer-tab[data-tab="keys"]`);
 
   if (type === "pod") {
-    // Pods show all tabs
     logsTab.style.display = "block";
     eventsTab.style.display = "block";
     metricsTab.style.display = "block";
-    state.selectedPod = name; // Keep backward compatibility
-  } else {
-    // Other resources don't show logs, events, metrics
+    if (keysTab) keysTab.style.display = "none";
+    state.selectedPod = name;
+  } else if (type === "node") {
+    logsTab.style.display = "none";
+    eventsTab.style.display = "none";
+    metricsTab.style.display = "block";
+    if (keysTab) keysTab.style.display = "none";
+  } else if (type === "configmaps") {
     logsTab.style.display = "none";
     eventsTab.style.display = "none";
     metricsTab.style.display = "none";
+    if (keysTab) keysTab.style.display = "block";
+  } else {
+    logsTab.style.display = "none";
+    eventsTab.style.display = "none";
+    metricsTab.style.display = "none";
+    if (keysTab) keysTab.style.display = "none";
   }
 
   UI.drawerTitle().textContent = `${capitalize(type)} Details: ${name}`;
@@ -292,7 +375,6 @@ async function openResource(name, type) {
   await renderResourceDrawer();
 }
 
-// Keep backward compatibility for pods
 async function openPod(pod) {
   await openResource(pod, "pod");
 }
@@ -308,13 +390,23 @@ async function renderResourceDrawer() {
       await renderPodOverview(name);
     } else if (type === "node") {
       await renderNodeOverview(name);
+    } else if (type === "services") {
+      await renderServiceOverview(name);
+    } else if (type === "configmaps") {
+      await renderConfigMapOverview(name);
     } else {
       await renderGenericOverview(name, type);
     }
   } else if (state.activeTab === "events" && type === "pod") {
     await renderPodEvents(name);
-  } else if (state.activeTab === "metrics" && type === "pod") {
-    await renderPodMetrics(name);
+  } else if (state.activeTab === "metrics") {
+    if (type === "pod") {
+      await renderPodMetrics(name);
+    } else if (type === "node") {
+      await renderNodeMetrics(name);
+    }
+  } else if (state.activeTab === "keys" && type === "configmaps") {
+    await renderConfigMapKeys(name);
   }
 }
 
@@ -344,42 +436,101 @@ async function renderPodOverview(pod) {
 }
 
 async function renderNodeOverview(nodeName) {
-  // Find node details from current resources list
-  const node = state.resources.find(r => r.name === nodeName);
-  if (!node) {
-    UI.tabContent().innerHTML = `<div class="small-muted">Node details not found.</div>`;
-    return;
-  }
-
-  const status = node.status || {};
-  const labels = node.labels || {};
-  
-  // Extract key labels
-  const roleLabels = Object.keys(labels).filter(k => k.includes('node-role.kubernetes.io')).map(k => k.replace('node-role.kubernetes.io/', '')).join(', ') || 'worker';
+  const d = await apiGet(`/api/node?node=${encodeURIComponent(nodeName)}`);
+  const statusBadge = d.status === "Ready" ? `<span class="badge-run">Ready</span>` : `<span class="badge-bad">NotReady</span>`;
   
   UI.tabContent().innerHTML = `
     <div class="kv-grid">
-      <div class="kv-key">Status</div><div class="kv-val">${statusBadgeNode(status)}</div>
-      <div class="kv-key">Role</div><div class="kv-val">${escapeHtml(roleLabels)}</div>
-      <div class="kv-key">Internal IP</div><div class="kv-val">${escapeHtml(status.ip || "-")}</div>
-      <div class="kv-key">Version</div><div class="kv-val">${escapeHtml(status.version || "-")}</div>
-      <div class="kv-key">OS</div><div class="kv-val">${escapeHtml(status.os || "-")}</div>
-      <div class="kv-key">Created</div><div class="kv-val">${fmtAge(node.creationTimestamp)}</div>
+      <div class="kv-key">Status</div><div class="kv-val">${statusBadge}</div>
+      <div class="kv-key">Pods Running</div><div class="kv-val">${escapeHtml(d.podCount || 0)}</div>
     </div>
     <hr/>
-    <div style="font-weight: 700; margin-bottom: 16px;">Labels</div>
-    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-      ${Object.entries(labels).slice(0, 10).map(([k, v]) => `
-        <span style="background: #e3f2fd; color: #1976d2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
-          ${escapeHtml(k)}: ${escapeHtml(v)}
-        </span>
-      `).join("")}
+    <div style="font-weight: 700; margin-bottom: 16px;">Pods on this Node (${d.podCount})</div>
+    ${d.pods && d.pods.length > 0 ? `
+      <div style="max-height: 300px; overflow-y: auto;">
+        <table class="table">
+          <thead class="table-head">
+            <tr><th>Pod</th><th>Namespace</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            ${d.pods.map(p => `
+              <tr>
+                <td class="fw-bold">${escapeHtml(p.name)}</td>
+                <td class="small-muted">${escapeHtml(p.namespace)}</td>
+                <td>${statusBadgePod({phase: p.status})}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    ` : '<div class="small-muted">No pods running on this node</div>'}
+  `;
+}
+
+async function renderServiceOverview(svcName) {
+  const ns = state.namespace;
+  const d = await apiGet(`/api/service?namespace=${encodeURIComponent(ns)}&service=${encodeURIComponent(svcName)}`);
+  
+  UI.tabContent().innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">Type</div><div class="kv-val">${escapeHtml(d.type)}</div>
+      <div class="kv-key">Cluster IP</div><div class="kv-val">${escapeHtml(d.clusterIP)}</div>
+    </div>
+    <hr/>
+    <div style="font-weight: 700; margin-bottom: 16px;">Endpoints (${d.endpoints?.length || 0})</div>
+    ${d.endpoints && d.endpoints.length > 0 ? `
+      <ul style="list-style: none; padding: 0; margin: 0;">
+        ${d.endpoints.map(ep => `
+          <li style="padding: 4px 0; font-family: monospace;">${escapeHtml(ep)}</li>
+        `).join("")}
+      </ul>
+    ` : '<div class="small-muted">No endpoints</div>'}
+    <hr/>
+    <div style="font-weight: 700; margin-bottom: 16px;">Selector</div>
+    ${d.selector && Object.keys(d.selector).length > 0 ? `
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        ${Object.entries(d.selector).map(([k, v]) => `
+          <span style="background: #e3f2fd; color: #1976d2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+            ${escapeHtml(k)}: ${escapeHtml(v)}
+          </span>
+        `).join("")}
+      </div>
+    ` : '<div class="small-muted">No selector</div>'}
+  `;
+}
+
+async function renderConfigMapOverview(cmName) {
+  const ns = state.namespace;
+  const d = await apiGet(`/api/configmap?namespace=${encodeURIComponent(ns)}&configmap=${encodeURIComponent(cmName)}`);
+  
+  UI.tabContent().innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">Name</div><div class="kv-val">${escapeHtml(d.name)}</div>
+      <div class="kv-key">Namespace</div><div class="kv-val">${escapeHtml(d.namespace)}</div>
+      <div class="kv-key">Keys</div><div class="kv-val">${escapeHtml(d.keyCount || 0)}</div>
     </div>
   `;
 }
 
+async function renderConfigMapKeys(cmName) {
+  const ns = state.namespace;
+  const d = await apiGet(`/api/configmap?namespace=${encodeURIComponent(ns)}&configmap=${encodeURIComponent(cmName)}`);
+  
+  UI.tabContent().innerHTML = `
+    <div style="font-weight: 700; margin-bottom: 16px;">Keys (${d.keys?.length || 0})</div>
+    ${d.keys && d.keys.length > 0 ? `
+      <ul style="list-style: none; padding: 0; margin: 0;">
+        ${d.keys.map(key => `
+          <li style="padding: 8px; background: #f8f9fa; margin-bottom: 4px; border-radius: 4px; font-family: monospace;">
+            ${escapeHtml(key)}
+          </li>
+        `).join("")}
+      </ul>
+    ` : '<div class="small-muted">No keys found</div>'}
+  `;
+}
+
 async function renderGenericOverview(name, type) {
-  // Find resource details from current resources list
   const resource = state.resources.find(r => r.name === name);
   if (!resource) {
     UI.tabContent().innerHTML = `<div class="small-muted">Resource details not found.</div>`;
@@ -466,6 +617,37 @@ async function renderPodMetrics(pod) {
       <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
         <div class="small-muted" style="margin-bottom: 8px;">Memory Usage</div>
         <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${totals.mem}</div>
+      </div>
+    </div>
+    <div class="small-muted">Source: metrics.k8s.io/v1beta1</div>
+  `;
+}
+
+async function renderNodeMetrics(nodeName) {
+  const m = await apiGet(`/api/node/metrics?node=${encodeURIComponent(nodeName)}`);
+
+  if (m.available === false) {
+    UI.tabContent().innerHTML = `
+      <div style="padding: 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;">
+        <strong>Metrics not available</strong><br/>
+        ${escapeHtml(m.message || "")}
+      </div>
+    `;
+    return;
+  }
+
+  const cpuUsage = m.usage?.cpu || "0n";
+  const memUsage = m.usage?.memory || "0Ki";
+  
+  UI.tabContent().innerHTML = `
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+      <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+        <div class="small-muted" style="margin-bottom: 8px;">CPU Usage</div>
+        <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${escapeHtml(cpuUsage)}</div>
+      </div>
+      <div style="padding: 20px; background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px;">
+        <div class="small-muted" style="margin-bottom: 8px;">Memory Usage</div>
+        <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${escapeHtml(memUsage)}</div>
       </div>
     </div>
     <div class="small-muted">Source: metrics.k8s.io/v1beta1</div>
