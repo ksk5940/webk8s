@@ -1,6 +1,6 @@
 image:
-  repository: webk8s
-  tag: "0.1.0"
+  repository: ksk5940/webk8s
+  tag: "latest"
 
 service:
   type: ClusterIP
