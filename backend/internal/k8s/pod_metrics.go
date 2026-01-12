@@ -4,32 +4,53 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 )
 
-type MetricsResponse struct {
-	Available bool   `json:"available"`
-	Message   string `json:"message,omitempty"`
-	Raw       any    `json:"raw,omitempty"`
-}
-
-// hits: /apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods/{pod}
+// GetPodMetrics hits: /apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods/{pod}
 func GetPodMetrics(ns, pod string) ([]byte, error) {
 	cfg := RestConfig()
 
-	rc, err := rest.RESTClientFor(&rest.Config{
-		Host:    cfg.Host,
-		APIPath: "",
-		ContentConfig: rest.ContentConfig{
-			NegotiatedSerializer: cfg.NegotiatedSerializer,
-		},
-		BearerToken:     cfg.BearerToken,
-		TLSClientConfig: cfg.TLSClientConfig,
-	})
+	// Create a copy of the config with metrics.k8s.io settings
+	metricsCfg := *cfg
+	metricsCfg.APIPath = "/apis"
+	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	metricsCfg.NegotiatedSerializer = cfg.NegotiatedSerializer
+
+	rc, err := rest.RESTClientFor(&metricsCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create REST client: %v", err)
 	}
 
-	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/namespaces/%s/pods/%s", ns, pod)
-	return rc.Get().AbsPath(path).Do(context.TODO()).Raw()
+	result := rc.Get().
+		Namespace(ns).
+		Resource("pods").
+		Name(pod).
+		Do(context.TODO())
+
+	return result.Raw()
+}
+
+// GetNodeMetrics hits: /apis/metrics.k8s.io/v1beta1/nodes/{node}
+func GetNodeMetrics(nodeName string) ([]byte, error) {
+	cfg := RestConfig()
+
+	// Create a copy of the config with metrics.k8s.io settings
+	metricsCfg := *cfg
+	metricsCfg.APIPath = "/apis"
+	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	metricsCfg.NegotiatedSerializer = cfg.NegotiatedSerializer
+
+	rc, err := rest.RESTClientFor(&metricsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create REST client: %v", err)
+	}
+
+	result := rc.Get().
+		Resource("nodes").
+		Name(nodeName).
+		Do(context.TODO())
+
+	return result.Raw()
 }
