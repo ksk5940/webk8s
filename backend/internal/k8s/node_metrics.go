@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 )
 
@@ -11,19 +12,21 @@ import (
 func GetNodeMetrics(nodeName string) ([]byte, error) {
 	cfg := RestConfig()
 
-	rc, err := rest.RESTClientFor(&rest.Config{
-		Host:    cfg.Host,
-		APIPath: "",
-		ContentConfig: rest.ContentConfig{
-			NegotiatedSerializer: cfg.NegotiatedSerializer,
-		},
-		BearerToken:     cfg.BearerToken,
-		TLSClientConfig: cfg.TLSClientConfig,
-	})
+	// Create a copy of the config with metrics.k8s.io settings
+	metricsCfg := *cfg
+	metricsCfg.APIPath = "/apis"
+	metricsCfg.GroupVersion = &schema.GroupVersion{Group: "metrics.k8s.io", Version: "v1beta1"}
+	metricsCfg.NegotiatedSerializer = cfg.NegotiatedSerializer
+
+	rc, err := rest.RESTClientFor(&metricsCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create REST client: %v", err)
 	}
 
-	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/nodes/%s", nodeName)
-	return rc.Get().AbsPath(path).Do(context.TODO()).Raw()
+	result := rc.Get().
+		Resource("nodes").
+		Name(nodeName).
+		Do(context.TODO())
+
+	return result.Raw()
 }

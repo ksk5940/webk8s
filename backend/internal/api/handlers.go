@@ -230,12 +230,36 @@ func GetServiceDetails(c *gin.Context) {
 	endpointsList := []string{}
 	if err == nil && endpoints != nil {
 		for _, subset := range endpoints.Subsets {
+			// Get all addresses (ready endpoints)
 			for _, addr := range subset.Addresses {
-				for _, port := range subset.Ports {
-					endpointsList = append(endpointsList, fmt.Sprintf("%s:%d", addr.IP, port.Port))
+				// Add each port combination
+				if len(subset.Ports) > 0 {
+					for _, port := range subset.Ports {
+						endpointsList = append(endpointsList, fmt.Sprintf("%s:%d", addr.IP, port.Port))
+					}
+				} else {
+					// No ports specified, just add IP
+					endpointsList = append(endpointsList, addr.IP)
+				}
+			}
+			// Also check NotReadyAddresses
+			for _, addr := range subset.NotReadyAddresses {
+				if len(subset.Ports) > 0 {
+					for _, port := range subset.Ports {
+						endpointsList = append(endpointsList, fmt.Sprintf("%s:%d (not ready)", addr.IP, port.Port))
+					}
+				} else {
+					endpointsList = append(endpointsList, fmt.Sprintf("%s (not ready)", addr.IP))
 				}
 			}
 		}
+	} else if err != nil {
+		log.Printf("Error getting endpoints for service %s: %v", svcName, err)
+	}
+
+	// If no endpoints found, add a note
+	if len(endpointsList) == 0 {
+		log.Printf("No endpoints found for service %s in namespace %s", svcName, ns)
 	}
 
 	c.JSON(200, gin.H{
