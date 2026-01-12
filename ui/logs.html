@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>webk8s logs</title>
+
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- FontAwesome -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+
+  <!-- Main CSS (same theme) -->
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+
+<body class="logs-page">
+  <div class="logs-topbar">
+    <div class="logs-tag">
+      <i class="fa-solid fa-layer-group"></i>
+      <span id="nsText">namespace: -</span>
+    </div>
+
+    <!-- container dropdown (only shown when needed) -->
+    <select id="containerSelect" class="logs-container-select" style="display:none;"></select>
+
+    <div class="logs-tag">
+      <i class="fa-solid fa-box"></i>
+      <span id="podText">pod: -</span>
+    </div>
+  </div>
+
+  <div class="logs-wrap">
+    <div class="logs-box" id="logBox"></div>
+  </div>
+
+<script>
+  function q(name){
+    return new URLSearchParams(location.search).get(name);
+  }
+
+  const ns  = q("namespace");
+  const pod = q("pod");
+
+  const nsText = document.getElementById("nsText");
+  const podText = document.getElementById("podText");
+  const box = document.getElementById("logBox");
+  const containerSelect = document.getElementById("containerSelect");
+
+  nsText.textContent  = "namespace: " + (ns || "-");
+  podText.textContent = "pod: " + (pod || "-");
+
+  let sse = null;
+  let selectedContainer = "";
+
+  function stopStream(){
+    if (sse) {
+      try { sse.close(); } catch {}
+      sse = null;
+    }
+  }
+
+  function startStream(){
+    stopStream();
+    box.textContent = ""; // clear logs on container switch
+
+    let url = `/api/logs/stream?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}&tailLines=200`;
+    if (selectedContainer) {
+      url += `&container=${encodeURIComponent(selectedContainer)}`;
+    }
+
+    sse = new EventSource(url);
+    sse.onmessage = (e) => {
+      box.textContent += e.data;
+      box.scrollTop = box.scrollHeight;
+    };
+    sse.onerror = () => {
+      box.textContent += "\n[log stream disconnected]\n";
+    };
+  }
+
+  async function loadContainers(){
+    const r = await fetch(`/api/pod/containers?namespace=${encodeURIComponent(ns)}&pod=${encodeURIComponent(pod)}`);
+    if (!r.ok) return null;
+    return r.json();
+  }
+
+  function buildContainerDropdown(containers, initContainers){
+    const totalCount = (containers?.length || 0) + (initContainers?.length || 0);
+    if (totalCount <= 1) return;
+
+    containerSelect.style.display = "block";
+
+    let html = `<option value="">(default container)</option>`;
+
+    if (containers && containers.length > 0) {
+      html += `<option value="" disabled>──────── Containers ────────</option>`;
+      html += containers.map(c => `<option value="${c}">${c}</option>`).join("");
+    }
+
+    if (initContainers && initContainers.length > 0) {
+      html += `<option value="" disabled>────── Init Containers ─────</option>`;
+      html += initContainers.map(c => `<option value="${c}">init: ${c}</option>`).join("");
+    }
+
+    containerSelect.innerHTML = html;
+    containerSelect.onchange = () => {
+      selectedContainer = containerSelect.value || "";
+      startStream();
+    };
+  }
+
+  (async function(){
+    if (!ns || !pod) {
+      box.textContent = "ERROR: namespace/pod missing.\nExample: /logs.html?namespace=default&pod=nginx-xxx";
+      return;
+    }
+
+    const info = await loadContainers();
+    const containers = info?.containers || [];
+    const initContainers = info?.initContainers || [];
+
+    buildContainerDropdown(containers, initContainers);
+    startStream();
+  })();
+
+  window.addEventListener("beforeunload", () => stopStream());
+</script>
+</body>
+</html>

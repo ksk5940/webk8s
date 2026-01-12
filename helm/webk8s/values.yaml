@@ -1,0 +1,11 @@
+image:
+  repository: webk8s
+  tag: "0.1.0"
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+  host: webk8s.example.com
+  className: nginx

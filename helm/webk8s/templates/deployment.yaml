@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webk8s
+  namespace: kube-system
+  labels:
+    app: webk8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webk8s
+  template:
+    metadata:
+      labels:
+        app: webk8s
+    spec:
+      serviceAccountName: webk8s
+      priorityClassName: system-cluster-critical
+      containers:
+        - name: webk8s
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
