@@ -5,6 +5,12 @@ pipeline {
     DOCKER_REPO  = "ksk5940/webk8s"
     DOCKER_CREDS = "dockerhub-creds"
     LATEST_TAG   = "latest"
+
+    // SonarQube
+    SONARQUBE_SERVER = "SONARQUBE"          // Must match Jenkins SonarQube Server Name
+    SONAR_SCANNER    = "SonarScanner"       // Must match Jenkins tool name
+    SONAR_PROJECT_KEY = "webk8s"
+    SONAR_PROJECT_NAME = "webk8s"
   }
 
   options {
@@ -23,10 +29,8 @@ pipeline {
     stage('Detect OS + Git Info') {
       steps {
         script {
-          // OS detection
           env.IS_WINDOWS = isUnix() ? "false" : "true"
 
-          // Get Git short commit
           if (isUnix()) {
             env.GIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
           } else {
@@ -34,13 +38,54 @@ pipeline {
             env.GIT_SHORT = env.GIT_SHORT.replaceAll("\\s+", "")
           }
 
-          // Image tags
           env.IMAGE_TAG = "${env.BUILD_NUMBER}"
           env.COMMIT_TAG = "${env.GIT_SHORT}"
 
           echo "OS Windows? ${env.IS_WINDOWS}"
           echo "Commit: ${env.GIT_SHORT}"
           echo "Tags: ${env.IMAGE_TAG}, ${env.COMMIT_TAG}, latest"
+        }
+      }
+    }
+
+    // ✅ SonarQube Stage Added Here
+    stage('SonarQube Analysis') {
+      steps {
+        script {
+          def scannerHome = tool(env.SONAR_SCANNER)
+
+          withSonarQubeEnv(env.SONARQUBE_SERVER) {
+            if (isUnix()) {
+              sh """
+                ${scannerHome}/bin/sonar-scanner \
+                  -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                  -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                  -Dsonar.projectVersion=${BUILD_NUMBER} \
+                  -Dsonar.sources=. \
+                  -Dsonar.exclusions=**/vendor/**,**/node_modules/**,**/dist/** \
+                  -Dsonar.go.coverage.reportPaths=coverage.out
+              """
+            } else {
+              bat """
+                "${scannerHome}\\bin\\sonar-scanner.bat" ^
+                  -Dsonar.projectKey=%SONAR_PROJECT_KEY% ^
+                  -Dsonar.projectName=%SONAR_PROJECT_NAME% ^
+                  -Dsonar.projectVersion=%BUILD_NUMBER% ^
+                  -Dsonar.sources=. ^
+                  -Dsonar.exclusions=**/vendor/**,**/node_modules/**,**/dist/** ^
+                  -Dsonar.go.coverage.reportPaths=coverage.out
+              """
+            }
+          }
+        }
+      }
+    }
+
+    // ✅ Optional Quality Gate enforcement (recommended)
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
         }
       }
     }
