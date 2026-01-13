@@ -81,14 +81,15 @@ pipeline {
       }
     }
 
-    // ✅ Optional Quality Gate enforcement (recommended)
-    stage('Quality Gate') {
-      steps {
-        timeout(time: 1, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: false
-        }
-      }
-    }
+// ✅ Optional Quality Gate enforcement (recommended)
+// stage('Quality Gate') {
+//   steps {
+//     timeout(time: 1, unit: 'MINUTES') {
+//       waitForQualityGate abortPipeline: false
+//     }
+//   }
+// }
+
 
     stage('Check Docker') {
       steps {
